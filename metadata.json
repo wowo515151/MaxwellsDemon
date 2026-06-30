@@ -1,0 +1,6 @@
+{
+  "name": "Maxwell Thermal Diode Simulator",
+  "description": "Interactive 3D molecular dynamics simulator and AI material explorer for Maxwell's theoretical heat-to-electricity crystal lattices.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
