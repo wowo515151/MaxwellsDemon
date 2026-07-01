@@ -5,6 +5,7 @@ import {defineConfig} from 'vite';
 
 export default defineConfig(() => {
   return {
+    // base path set to '/maxwells-demon/' to match the GitHub Pages URL repository name
     base: '/maxwells-demon/',
     plugins: [react(), tailwindcss()],
     resolve: {
