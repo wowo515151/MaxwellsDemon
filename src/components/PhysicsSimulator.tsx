@@ -73,6 +73,8 @@ export const PhysicsSimulator: React.FC<PhysicsSimulatorProps> = ({
       currentHistory: [] as { time: number; net: number; lr: number; rl: number }[],
     },
     spawnTimer: 0,
+    consecutiveL: 0,
+    consecutiveR: 0,
     lastLiveSampleIdx: 0,
   });
 
@@ -502,8 +504,23 @@ export const PhysicsSimulator: React.FC<PhysicsSimulatorProps> = ({
           // Base thermal velocity around 2-4 A/s for standard T = 300K
           const thermalSpeed = 0.12 * Math.sqrt(params.temperature) * params.electronSpeedMultiplier;
 
-          // Inject from Left (L -> R) moving along +z
-          if (Math.random() < 0.5) {
+          // Decide the injection direction.
+          // In standard random coin flipping, long consecutive streaks naturally occur,
+          // which can excessively displace the gate in one direction.
+          // To balance the simulation and make it feel truly random yet physically uniform,
+          // we limit the consecutive spawn streak on either side to a maximum of 2.
+          let spawnLeft = false;
+          if (stateRef.current.consecutiveL >= 2) {
+            spawnLeft = false;
+          } else if (stateRef.current.consecutiveR >= 2) {
+            spawnLeft = true;
+          } else {
+            spawnLeft = Math.random() < 0.5;
+          }
+
+          if (spawnLeft) {
+            stateRef.current.consecutiveL++;
+            stateRef.current.consecutiveR = 0;
             stateRef.current.particleIdCounter++;
             const randX = (Math.random() - 0.5) * xAperture * 1.5;
             const randY = (Math.random() - 0.5) * yAperture * 1.5;
@@ -527,6 +544,8 @@ export const PhysicsSimulator: React.FC<PhysicsSimulatorProps> = ({
             s.injectedLtoR++;
           } else {
             // Inject from Right (R -> L) moving along -z
+            stateRef.current.consecutiveR++;
+            stateRef.current.consecutiveL = 0;
             stateRef.current.particleIdCounter++;
             const randX = (Math.random() - 0.5) * xAperture * 1.5;
             const randY = (Math.random() - 0.5) * yAperture * 1.5;
@@ -596,7 +615,7 @@ export const PhysicsSimulator: React.FC<PhysicsSimulatorProps> = ({
           const softenedDistSq = distSq + eps * eps;
 
           // Repulsion force magnitude: Fe = C * q_gate * q_electron / dist^2
-          // Both are negative, so force is repelling (positive direction away from each other)
+          // With q_electron = -1 and gate charge q_gate negative, both are negative, so the force magnitude is positive (repulsive).
           const C_electrostatic = 2.4; // coupling strength
           const forceMag = (C_electrostatic * params.gateCharge) / softenedDistSq;
 
@@ -712,9 +731,31 @@ export const PhysicsSimulator: React.FC<PhysicsSimulatorProps> = ({
         const fDampY = -gamma * gate.vy;
         const fDampZ = -gamma * gate.vz;
 
-        const totalGateFX = fSpringX + fElectrostaticX + fDampX;
-        const totalGateFY = fSpringY + fElectrostaticY + fDampY;
-        const totalGateFZ = fSpringZ + fElectrostaticZ + fDampZ;
+        // Compute Lennard-Jones soft-core interactions representing the classical force-field model in 3D
+        const sigma_lj = 1.8;
+        const eps_lj = 0.08;
+        let f_lj_x = 0;
+        let f_lj_y = 0;
+        let f_lj_z = 0;
+        corners.forEach(c => {
+          const dx = gate.x - c.x;
+          const dy = gate.y - c.y;
+          const dz = gate.z - c.z;
+          const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+          if (dist > 0.1) {
+            const sr = sigma_lj / dist;
+            const sr6 = Math.pow(sr, 6);
+            const sr12 = sr6 * sr6;
+            const factor = (24 * eps_lj * (2 * sr12 - sr6)) / (dist * dist);
+            f_lj_x += factor * dx;
+            f_lj_y += factor * dy;
+            f_lj_z += factor * dz;
+          }
+        });
+
+        const totalGateFX = fSpringX + fElectrostaticX + fDampX + f_lj_x;
+        const totalGateFY = fSpringY + fElectrostaticY + fDampY + f_lj_y;
+        const totalGateFZ = fSpringZ + fElectrostaticZ + fDampZ + f_lj_z;
 
         // Verlet / Euler integration based on the selected backend simulation driver
         if (params.activeBackend === SimBackend.LAMMPS) {
@@ -729,11 +770,9 @@ export const PhysicsSimulator: React.FC<PhysicsSimulatorProps> = ({
 
           // 2. Evaluate updated forces at the new positions for mathematically rigorous Velocity Verlet
           // Compute Lennard-Jones soft-core interactions representing the classical force-field model in 3D
-          const sigma_lj = 1.8;
-          const eps_lj = 0.08;
-          let f_lj_x = 0;
-          let f_lj_y = 0;
-          let f_lj_z = 0;
+          let f_lj_x_new = 0;
+          let f_lj_y_new = 0;
+          let f_lj_z_new = 0;
           corners.forEach(c => {
             const dx = gate.x - c.x;
             const dy = gate.y - c.y;
@@ -744,9 +783,9 @@ export const PhysicsSimulator: React.FC<PhysicsSimulatorProps> = ({
               const sr6 = Math.pow(sr, 6);
               const sr12 = sr6 * sr6;
               const factor = (24 * eps_lj * (2 * sr12 - sr6)) / (dist * dist);
-              f_lj_x += factor * dx;
-              f_lj_y += factor * dy;
-              f_lj_z += factor * dz;
+              f_lj_x_new += factor * dx;
+              f_lj_y_new += factor * dy;
+              f_lj_z_new += factor * dz;
             }
           });
 
@@ -788,14 +827,19 @@ export const PhysicsSimulator: React.FC<PhysicsSimulatorProps> = ({
             fElectrostaticZ_new -= forceMag * (dz / (dist || 1));
           });
 
-          // New damping forces using current/predicted velocities
-          const fDampX_new = -gamma * gate.vx;
-          const fDampY_new = -gamma * gate.vy;
-          const fDampZ_new = -gamma * gate.vz;
+          // Mathematically rigorous velocity prediction for damping force at t+dt
+          const vx_pred = gate.vx + ax_old * dt;
+          const vy_pred = gate.vy + ay_old * dt;
+          const vz_pred = gate.vz + az_old * dt;
 
-          const totalGateFX_new = fSpringX_new + fElectrostaticX_new + fDampX_new + f_lj_x;
-          const totalGateFY_new = fSpringY_new + fElectrostaticY_new + fDampY_new + f_lj_y;
-          const totalGateFZ_new = fSpringZ_new + fElectrostaticZ_new + fDampZ_new + f_lj_z;
+          // New damping forces using predicted velocities for numerical accuracy
+          const fDampX_new = -gamma * vx_pred;
+          const fDampY_new = -gamma * vy_pred;
+          const fDampZ_new = -gamma * vz_pred;
+
+          const totalGateFX_new = fSpringX_new + fElectrostaticX_new + fDampX_new + f_lj_x_new;
+          const totalGateFY_new = fSpringY_new + fElectrostaticY_new + fDampY_new + f_lj_y_new;
+          const totalGateFZ_new = fSpringZ_new + fElectrostaticZ_new + fDampZ_new + f_lj_z_new;
 
           const ax_new = totalGateFX_new / gate.mass;
           const ay_new = totalGateFY_new / gate.mass;
@@ -846,7 +890,7 @@ export const PhysicsSimulator: React.FC<PhysicsSimulatorProps> = ({
           stateRef.current.lastLiveSampleIdx = liveSampleIdx;
           const totalPassed = s.passedLtoR + s.passedRtoL;
           const diff = s.passedLtoR - s.passedRtoL;
-          const rectRatio = totalPassed > 0 ? (diff / totalPassed) * 100 : 0;
+          const rectRatio = totalPassed > 0 ? (Math.abs(diff) / totalPassed) * 100 : 0;
           s.rectificationRatio = rectRatio;
           s.netCurrent = diff;
 
@@ -882,7 +926,7 @@ export const PhysicsSimulator: React.FC<PhysicsSimulatorProps> = ({
           const elapsed = stateRef.current.time;
           const totalPassed = s.passedLtoR + s.passedRtoL;
           const diff = s.passedLtoR - s.passedRtoL;
-          const rectRatio = totalPassed > 0 ? (diff / totalPassed) * 100 : 0;
+          const rectRatio = totalPassed > 0 ? (Math.abs(diff) / totalPassed) * 100 : 0;
 
           if (elapsed >= duration) {
             sweepCallbacksRef.current.triggerNextSweepStep(
@@ -1648,7 +1692,15 @@ export const PhysicsSimulator: React.FC<PhysicsSimulatorProps> = ({
               <div className="bg-[#050505]/40 border border-[#1a1a1a] rounded p-3">
                 <span className="text-[9px] text-[#555] block uppercase tracking-widest font-mono mb-1">Rectification Rate</span>
                 <span className="text-lg font-bold font-mono text-emerald-400">{stats.rectificationRatio.toFixed(1)}%</span>
-                <span className="text-[10px] text-[#666] block mt-1">Diode Efficiency</span>
+                <span className="text-[10px] text-[#666] block mt-1">
+                  Ratio: <strong className="text-[#888]">
+                    {stats.passedLtoR === 0 && stats.passedRtoL === 0
+                      ? "1.00"
+                      : stats.passedRtoL === 0 || stats.passedLtoR === 0
+                      ? "∞"
+                      : (Math.max(stats.passedLtoR, stats.passedRtoL) / Math.min(stats.passedLtoR, stats.passedRtoL)).toFixed(2)}
+                  </strong>
+                </span>
               </div>
             </div>
 

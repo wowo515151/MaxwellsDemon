@@ -355,11 +355,6 @@ export default function App() {
             />
           </section>
 
-          {/* 1b. Physics Auditor and Derivations Dashboard */}
-          <section aria-labelledby="physics-auditor-title">
-            <PhysicsAuditor selectedMaterial={selectedMaterial} params={params} />
-          </section>
-
           {/* 2. Candidate database & AI material selector */}
           <section aria-labelledby="lattice-db-title">
             <MaterialExplorer
@@ -373,6 +368,11 @@ export default function App() {
           {/* 3. FOSS Packages and scripting guide */}
           <section aria-labelledby="foss-guide-title">
             <FossGuide selectedMaterial={selectedMaterial} params={params} />
+          </section>
+
+          {/* 4. Physics Auditor and Derivations Dashboard */}
+          <section aria-labelledby="physics-auditor-title">
+            <PhysicsAuditor selectedMaterial={selectedMaterial} params={params} />
           </section>
 
         </main>
